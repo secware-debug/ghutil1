@@ -16,6 +16,8 @@ class WebSocketServer
 {
 public:
     using MessageCallback = std::function<void(const std::string& text, const std::string& clientIp)>;
+    using DisconnectCallback = std::function<void(const std::string& clientIp)>;
+    using ErrorCallback = std::function<void(const std::string& error)>;
 
     WebSocketServer();
     ~WebSocketServer();
@@ -24,6 +26,8 @@ public:
     void Stop();
 
     void SetMessageCallback(MessageCallback cb) { m_onMessage = std::move(cb); }
+    void SetDisconnectCallback(DisconnectCallback cb) { m_onDisconnect = std::move(cb); }
+    void SetErrorCallback(ErrorCallback cb) { m_onError = std::move(cb); }
     bool IsRunning() const { return m_running; }
 
     void HandleClient(SOCKET clientSocket, const std::string& clientIp);
@@ -41,4 +45,6 @@ private:
     HANDLE m_thread = nullptr;
     std::atomic<bool> m_running{ false };
     MessageCallback m_onMessage;
+    DisconnectCallback m_onDisconnect;
+    ErrorCallback m_onError;
 };

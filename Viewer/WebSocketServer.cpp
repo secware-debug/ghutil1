@@ -164,17 +164,28 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
 }
 
 void WebSocketServer::HandleClient(SOCKET clientSocket, const std::string& clientIp) {
-    std::string request;
-    if (DoHandshake(clientSocket, request).empty()) {
+    try {
+        std::string request;
+        if (DoHandshake(clientSocket, request).empty()) {
+            closesocket(clientSocket);
+            return;
+        }
+        while (m_running) {
+            std::string payload;
+            if (!ReadWebSocketFrame(clientSocket, payload)) break;
+            if (m_onMessage) m_onMessage(payload, clientIp);
+        }
         closesocket(clientSocket);
-        return;
+        if (m_onDisconnect) m_onDisconnect(clientIp);
+    } catch (const std::exception& e) {
+        closesocket(clientSocket);
+        if (m_onDisconnect) m_onDisconnect(clientIp);
+        if (m_onError) m_onError(e.what());
+    } catch (...) {
+        closesocket(clientSocket);
+        if (m_onDisconnect) m_onDisconnect(clientIp);
+        if (m_onError) m_onError("Unknown exception in client handler");
     }
-    while (m_running) {
-        std::string payload;
-        if (!ReadWebSocketFrame(clientSocket, payload)) break;
-        if (m_onMessage) m_onMessage(payload, clientIp);
-    }
-    closesocket(clientSocket);
 }
 
 void WebSocketServer::ListenLoop() {

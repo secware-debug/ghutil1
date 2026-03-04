@@ -5,7 +5,9 @@
 #include "framework.h"
 #include "Viewer.h"
 #include "ViewerDlg.h"
+#include "ConfigEncryptDlg.h"
 #include "afxdialogex.h"
+#include <shellapi.h>
 #include <sstream>
 #include <memory>
 
@@ -97,6 +99,11 @@ BEGIN_MESSAGE_MAP(CViewerDlg, CDialogEx)
 	ON_WM_QUERYDRAGICON()
 	ON_MESSAGE(WM_WEBSOCKET_MSG, &CViewerDlg::OnWebSocketMsg)
 	ON_WM_DESTROY()
+	ON_MESSAGE(WM_TRAYICON, &CViewerDlg::OnTrayIcon)
+	ON_MESSAGE(WM_CLIENT_DISCONNECTED, &CViewerDlg::OnClientDisconnected)
+	ON_BN_CLICKED(IDC_BTN_ENCRYPT_CONFIG, &CViewerDlg::OnBnClickedEncryptConfig)
+	ON_BN_CLICKED(IDC_BTN_CLEAR_ALL, &CViewerDlg::OnBnClickedClearAll)
+	ON_MESSAGE(WM_SERVER_ERROR, &CViewerDlg::OnServerError)
 END_MESSAGE_MAP()
 
 
@@ -105,6 +112,7 @@ END_MESSAGE_MAP()
 BOOL CViewerDlg::OnInitDialog()
 {
 	CDialogEx::OnInitDialog();
+	try {
 
 	// Add "About..." menu item to system menu.
 
@@ -145,12 +153,27 @@ BOOL CViewerDlg::OnInitDialog()
 		auto* p = new WebSocketMsgPayload{ text, clientIp };
 		PostMessage(WM_WEBSOCKET_MSG, (WPARAM)p, 0);
 	});
+	m_server.SetDisconnectCallback([this](const std::string& clientIp) {
+		auto* p = new std::string(clientIp);
+		PostMessage(WM_CLIENT_DISCONNECTED, (WPARAM)p, 0);
+	});
+	m_server.SetErrorCallback([this](const std::string& error) {
+		auto* p = new std::string(error);
+		PostMessage(WM_SERVER_ERROR, (WPARAM)p, 0);
+	});
 	if (!m_server.Start(8765)) {
 		AfxMessageBox(_T("WebSocket server failed to start on port 8765."));
 	} else {
 		SetWindowText(_T("Server - 0.0.0.0:8765"));
+		AddTrayIcon();
 	}
-
+	} catch (const std::exception& e) {
+		CString str;
+		str.Format(_T("Exception on init: %S"), e.what());
+		AfxMessageBox(str, MB_ICONERROR);
+	} catch (...) {
+		AfxMessageBox(_T("Unknown exception on init."), MB_ICONERROR);
+	}
 	return TRUE;
 }
 
@@ -203,6 +226,7 @@ HCURSOR CViewerDlg::OnQueryDragIcon()
 
 void CViewerDlg::OnDestroy()
 {
+	RemoveTrayIcon();
 	CDialogEx::OnDestroy();
 	m_server.Stop();
 }
@@ -211,14 +235,26 @@ LRESULT CViewerDlg::OnWebSocketMsg(WPARAM wParam, LPARAM lParam)
 {
 	std::unique_ptr<WebSocketMsgPayload> p((WebSocketMsgPayload*)wParam);
 	if (!p) return 0;
-	std::string type, message;
-	if (ParseJsonTypeAndMessage(p->text, type, message)) {
-		bool isTargetHit = (type == "target_hit");
-		UpdateOrAddClient(p->clientIp, isTargetHit);
-		if (isTargetHit) {
-			CString msg = message.empty() ? _T("target_hit received") : CString(CStringA(message.c_str()));
-			ShowNotification(_T("Target Hit"), msg);
+	try {
+		std::string type, message;
+		if (ParseJsonTypeAndMessage(p->text, type, message)) {
+			if (type == "end") {
+				SetClientOff(p->clientIp);
+				return 0;
+			}
+			bool isTargetHit = (type == "target_hit");
+			UpdateOrAddClient(p->clientIp, isTargetHit);
+			if (isTargetHit) {
+				CString msg = message.empty() ? _T("target_hit received") : CString(CStringA(message.c_str()));
+				ShowNotification(_T("Target Hit"), msg);
+			}
 		}
+	} catch (const std::exception& e) {
+		CString str;
+		str.Format(_T("Exception in WebSocket message: %S"), e.what());
+		AfxMessageBox(str, MB_ICONERROR);
+	} catch (...) {
+		AfxMessageBox(_T("Unknown exception in WebSocket message."), MB_ICONERROR);
 	}
 	return 0;
 }
@@ -263,10 +299,105 @@ void CViewerDlg::UpdateOrAddClient(const std::string& clientIp, bool eventTarget
 	}
 }
 
+bool CViewerDlg::AddTrayIcon()
+{
+	NOTIFYICONDATAW nid = {};
+	nid.cbSize = sizeof(nid);
+	nid.hWnd = m_hWnd;
+	nid.uID = ID_TRAYICON;
+	nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+	nid.uCallbackMessage = WM_TRAYICON;
+	nid.hIcon = m_hIcon;
+	wcscpy_s(nid.szTip, L"Server");
+	return Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+}
+
+void CViewerDlg::RemoveTrayIcon()
+{
+	NOTIFYICONDATAW nid = {};
+	nid.cbSize = sizeof(nid);
+	nid.hWnd = m_hWnd;
+	nid.uID = ID_TRAYICON;
+	Shell_NotifyIconW(NIM_DELETE, &nid);
+}
+
+LRESULT CViewerDlg::OnTrayIcon(WPARAM wParam, LPARAM lParam)
+{
+	if (LOWORD(lParam) == NIN_BALLOONUSERCLICK)
+		SetForegroundWindow();
+	return 0;
+}
+
+LRESULT CViewerDlg::OnClientDisconnected(WPARAM wParam, LPARAM lParam)
+{
+	std::unique_ptr<std::string> p((std::string*)wParam);
+	if (p) SetClientOff(*p);
+	return 0;
+}
+
+LRESULT CViewerDlg::OnServerError(WPARAM wParam, LPARAM lParam)
+{
+	std::unique_ptr<std::string> p((std::string*)wParam);
+	if (p) {
+		CString str;
+		str.Format(_T("Server error: %S"), p->c_str());
+		AfxMessageBox(str, MB_ICONERROR);
+	}
+	return 0;
+}
+
+void CViewerDlg::OnBnClickedEncryptConfig()
+{
+	try {
+		CConfigEncryptDlg dlg(this);
+		dlg.DoModal();
+	} catch (const std::exception& e) {
+		CString msg;
+		msg.Format(_T("Exception: %S"), e.what());
+		AfxMessageBox(msg, MB_ICONERROR);
+	} catch (...) {
+		AfxMessageBox(_T("Unknown exception."), MB_ICONERROR);
+	}
+}
+
+void CViewerDlg::OnBnClickedClearAll()
+{
+	try {
+		m_listClients.DeleteAllItems();
+		m_clientsByIp.clear();
+		m_nextClientIndex = 0;
+	} catch (const std::exception& e) {
+		CString msg;
+		msg.Format(_T("Exception: %S"), e.what());
+		AfxMessageBox(msg, MB_ICONERROR);
+	} catch (...) {
+		AfxMessageBox(_T("Unknown exception."), MB_ICONERROR);
+	}
+}
+
+void CViewerDlg::SetClientOff(const std::string& clientIp)
+{
+	auto it = m_clientsByIp.find(clientIp);
+	if (it == m_clientsByIp.end()) return;
+	ClientRow& row = it->second;
+	row.statusOn = false;
+	if (row.listIndex >= 0 && row.listIndex < m_listClients.GetItemCount())
+		m_listClients.SetItemText(row.listIndex, 2, _T("Off"));
+}
+
 void CViewerDlg::ShowNotification(const CString& title, const CString& message)
 {
-	// Use Windows 10+ toast if available; otherwise fallback to message box.
-	// For compatibility we use a simple message box; you can replace with Shell_NotifyIcon or toast API.
+	NOTIFYICONDATAW nid = {};
+	nid.cbSize = sizeof(nid);
+	nid.hWnd = m_hWnd;
+	nid.uID = ID_TRAYICON;
+	nid.uFlags = NIF_INFO;
+	nid.dwInfoFlags = NIIF_INFO;
+	nid.uTimeout = 5000;
+	wcsncpy_s(nid.szInfoTitle, (LPCWSTR)title, _TRUNCATE);
+	wcsncpy_s(nid.szInfo, (LPCWSTR)message, _TRUNCATE);
+	if (Shell_NotifyIconW(NIM_MODIFY, &nid))
+		return;
 	AfxMessageBox(message, MB_ICONINFORMATION | MB_OK);
 }
 
