@@ -1,0 +1,11 @@
+# Copy to wrangler.toml and set your worker name.
+# Add ORIGIN_WS_URL in Cloudflare Dashboard → Workers → your worker → Settings → Variables
+# Example: ORIGIN_WS_URL = https://your-tunnel-host.trycloudflare.com
+
+name = "ghutil-ws-proxy"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+# Optional: define in Dashboard instead
+# [vars]
+# ORIGIN_WS_URL = "https://your-server.example.com"
